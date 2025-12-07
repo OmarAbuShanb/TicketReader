@@ -1,6 +1,7 @@
 package dev.anonymous.ticket_reader.ui.login
 
 import android.content.Context
+import android.content.DialogInterface
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.util.Log
@@ -23,6 +24,12 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
     private lateinit var webLoginView: WebView
     private var username: String? = null
     private var password: String? = null
+
+    private var listener:OnDismissListener? = null
+
+    fun setOnDismissListener(listener:OnDismissListener) {
+        this.listener = listener
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -152,6 +159,14 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         webLoginView.evaluateJavascript(script, null)
     }
 
+    override fun onDismiss(dialog: DialogInterface) {
+        super.onDismiss(dialog)
+        listener?.onDialogDismissed()
+    }
+
+    interface OnDismissListener {
+        fun onDialogDismissed()
+    }
 
     companion object {
         private const val ARG_USERNAME = "username"

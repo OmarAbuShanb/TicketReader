@@ -10,9 +10,6 @@ class CredentialsAnalyzer(
     private val recentUsernames = LinkedList<String>()
     private val recentPasswords = LinkedList<String>()
 
-    private var confirmedUsername: String? = null
-    private var confirmedPassword: String? = null
-
     // تنظيف القراءات
     private fun clean(text: String): String {
         var cleanedText = text
@@ -68,13 +65,10 @@ class CredentialsAnalyzer(
         val password = getStableValue(recentPasswords)
 
         if (username != null && password != null) {
-            if (username != confirmedUsername || password != confirmedPassword) {
-                confirmedUsername = username
-                confirmedPassword = password
-
-                Log.d("CRED", "✅ Confirmed: user=$username pass=$password")
-                onCredentialsConfirmed(username, password)
-            }
+            Log.d("CRED", "✅ Confirmed: user=$username pass=$password")
+            onCredentialsConfirmed(username, password)
+            recentUsernames.clear()
+            recentPasswords.clear()
         }
     }
 
