@@ -46,12 +46,12 @@ class CredentialsAnalyzer(
         }
 
         when (label) {
-            "username" -> {
+            "username_field" -> {
                 recentUsernames.add(text)
                 if (recentUsernames.size > 10) recentUsernames.removeFirst()
             }
 
-            "password" -> {
+            "password_field" -> {
                 recentPasswords.add(text)
                 if (recentPasswords.size > 10) recentPasswords.removeFirst()
             }

@@ -5,23 +5,11 @@ import android.graphics.RectF
 
 object BitmapUtils {
 
-    fun cropBox(original: Bitmap, box: RectF): Bitmap {
-
-        val left = (box.left * original.width)
-            .toInt()
-            .coerceIn(0, original.width - 1)
-
-        val top = (box.top * original.height)
-            .toInt()
-            .coerceIn(0, original.height - 1)
-
-        val right = (box.right * original.width)
-            .toInt()
-            .coerceIn(1, original.width)
-
-        val bottom = (box.bottom * original.height)
-            .toInt()
-            .coerceIn(1, original.height)
+    fun cropBoxPx(original: Bitmap, boxPx: RectF): Bitmap {
+        val left = boxPx.left.toInt().coerceIn(0, original.width - 1)
+        val top = boxPx.top.toInt().coerceIn(0, original.height - 1)
+        val right = boxPx.right.toInt().coerceIn(left + 1, original.width)
+        val bottom = boxPx.bottom.toInt().coerceIn(top + 1, original.height)
 
         val width = (right - left).coerceAtLeast(1)
         val height = (bottom - top).coerceAtLeast(1)

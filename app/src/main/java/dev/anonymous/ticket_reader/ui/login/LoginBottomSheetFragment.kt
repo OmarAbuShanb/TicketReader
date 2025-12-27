@@ -1,16 +1,23 @@
 package dev.anonymous.ticket_reader.ui.login
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.DialogInterface
+import android.graphics.Bitmap
+import android.graphics.Color // Added this import
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.google.android.material.bottomsheet.BottomSheetBehavior
@@ -22,12 +29,14 @@ import java.util.Locale
 class LoginBottomSheetFragment : BottomSheetDialogFragment() {
 
     private lateinit var webLoginView: WebView
+    private lateinit var progressBar: ProgressBar
+
     private var username: String? = null
     private var password: String? = null
 
-    private var listener:OnDismissListener? = null
+    private var listener: OnDismissListener? = null
 
-    fun setOnDismissListener(listener:OnDismissListener) {
+    fun setOnDismissListener(listener: OnDismissListener) {
         this.listener = listener
     }
 
@@ -46,6 +55,7 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         // Inflate the layout for this fragment
         val view = inflater.inflate(R.layout.fragment_login_bottom_sheet, container, false)
         webLoginView = view.findViewById(R.id.webLoginView)
+        progressBar = view.findViewById(R.id.progressBar)
         setupWebView()
         return view
     }
@@ -53,12 +63,14 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
     override fun onStart() {
         super.onStart()
         val dialog = dialog as? BottomSheetDialog ?: return
-        val bottomSheet = dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet) as? FrameLayout
-            ?: return
+        val bottomSheet =
+            dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet) as? FrameLayout
+                ?: return
         val behavior = BottomSheetBehavior.from(bottomSheet)
 
         // Set the custom drawable with rounded corners
-        bottomSheet.background = ContextCompat.getDrawable(requireContext(), R.drawable.bottom_sheet_background)
+        bottomSheet.background =
+            ContextCompat.getDrawable(requireContext(), R.drawable.bottom_sheet_background)
 
         val layoutParams = bottomSheet.layoutParams
         layoutParams.height = ViewGroup.LayoutParams.MATCH_PARENT
@@ -70,16 +82,26 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         if (username != null && password != null) {
-            showWebLoginPage(username!!, password!!)
+            showWebLoginPage()
         } else {
-            Toast.makeText(requireContext(), "Username or password missing", Toast.LENGTH_SHORT).show()
+            Toast.makeText(requireContext(), "Username or password missing", Toast.LENGTH_SHORT)
+                .show()
             dismiss()
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webLoginView.settings.javaScriptEnabled = true
         webLoginView.settings.domStorageEnabled = true
+        webLoginView.setBackgroundColor(Color.TRANSPARENT)
+        webLoginView.addJavascriptInterface(object {
+            @android.webkit.JavascriptInterface
+            @Suppress("unused")
+            fun hideLoader() {
+                Toast.makeText(requireContext(), "جار تسجيل الدخول...", Toast.LENGTH_LONG).show()
+            }
+        }, "Android")
     }
 
     @Suppress("DEPRECATION")
@@ -89,7 +111,7 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         val dhcp = wifiManager.dhcpInfo ?: return null
 
         val gateway = dhcp.gateway
-        return String.Companion.format(
+        return String.format(
             Locale.US,
             "%d.%d.%d.%d",
             gateway and 0xff,
@@ -99,11 +121,12 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         )
     }
 
-    private fun showWebLoginPage(username: String, password: String) {
+    private fun showWebLoginPage() {
         val routerIp = getRouterIPv4(requireContext())
 
         if (routerIp == null) {
-            Toast.makeText(requireContext(), "⚠ لا يمكن العثور على Gateway IP", Toast.LENGTH_LONG).show()
+            Toast.makeText(requireContext(), "⚠ لا يمكن العثور على Gateway IP", Toast.LENGTH_LONG)
+                .show()
             return
         }
 
@@ -112,51 +135,113 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         val loginUrl = "http://$routerIp/"
 
         webLoginView.webViewClient = object : WebViewClient() {
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                progressBar.visibility = View.VISIBLE
+                super.onPageStarted(view, url, favicon)
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
-                if (url.contains("login", true) || url.contains("hotspot", true)) {
-                    injectCredentials(username, password)
-                }
+                super.onPageFinished(view, url)
 
                 if (url.contains("status", true) || url.contains("success", true)) {
-                    view.stopLoading()
-                    view.loadUrl("https://www.google.com")
+                    progressBar.visibility = View.GONE
+                }
+
+                if (url.contains("login", true) || url.contains("hotspot", true)) {
+                    checkLoginFieldsAndInjectCredentials(view)
                 }
             }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                val message = error?.description.toString()
+                Log.e("WEBVIEW_ERROR", "onReceivedError: $message")
+                showErrorHtml("❌ فشل الوصول إلى الصفحة\n$message")
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                println("onReceivedHttpError: ${errorResponse?.reasonPhrase}")
+                super.onReceivedHttpError(view, request, errorResponse)
+            }
+
         }
 
         webLoginView.loadUrl(loginUrl)
     }
 
-    private fun injectCredentials(username: String, password: String) {
-        val script = """
-        (function() {
-            const fill = (selector, value) => {
-                const el = document.querySelector(selector);
-                if (el) { el.value = value; el.dispatchEvent(new Event('input')); }
-            };
+    private fun checkLoginFieldsAndInjectCredentials(view: WebView) {
+        view.evaluateJavascript(
+            """
+            (function() {
+                const u = document.querySelector('input[name="username"], input[name="user"], input[type="text"]');
+                const p = document.querySelector('input[name="password"], input[type="password"]');
+                const b = [...document.querySelectorAll('button, input[type=submit], input[type=button]')]
+                              .find(x => (x.innerText || x.value || "").toLowerCase().includes("login")
+                                      || (x.innerText || x.value || "").includes("connect")
+                                      || (x.innerText || x.value || "").includes("دخول"));
 
-            fill('input[name="username"]', '$username');
-            fill('input[name="user"]', '$username');
-            fill('input[type="text"]', '$username');
+                if (!u && !p) return "NO_USER_PASS";
+                if (!u) return "NO_USERNAME";
+                if (!p) return "NO_PASSWORD";
+                if (!b) return "NO_BUTTON";
 
-            fill('input[name="password"]', '$password');
-            fill('input[type="password"]', '$password');
+                u.value = "$username";
+                p.value = "$password";
+                setTimeout(() => {
+                    b.click();
+                    Android.hideLoader();
+                }, 1000);
 
-            const buttons = document.querySelectorAll('button, input[type=submit], input[type=button]');
-            for (let b of buttons) {
-                if (
-                    (b.innerText || b.value || "").toLowerCase().includes("login") ||
-                    (b.innerText || b.value || "").includes("Connect") ||
-                    (b.innerText || b.value || "").includes("دخول")
-                ) {
-                    setTimeout(() => b.click(), 1000);
-                    break;
-                }
+            return "DONE";
+            })();
+            """
+        ) { result ->
+
+            when (result.replace("\"", "")) {
+
+                "NO_USER_PASS" -> showErrorHtml("❌ الصفحة لا تحتوي حقول تسجيل دخول")
+
+                "NO_USERNAME" -> showErrorHtml("❌ لا يوجد حقل Username في صفحة الراوتر")
+
+                "NO_PASSWORD" -> showErrorHtml("❌ لا يوجد حقل Password في صفحة الراوتر")
+
+                "NO_BUTTON" -> showErrorHtml("❌ لا يوجد زر Login في صفحة الراوتر")
             }
-        })();
-    """.trimIndent()
+        }
+    }
 
-        webLoginView.evaluateJavascript(script, null)
+    private fun showErrorHtml(message: String) {
+        webLoginView.loadData(
+            """
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: sans-serif; text-align: center; padding: 40px; background: #fafafa; color: #333; }
+                .box { padding: 20px; border-radius: 10px; background: #fff; box-shadow: 0 0 10px #ddd; display: inline-block; }
+                h2 { color: #c62828; }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>⚠️ فشل تحميل الصفحة</h2>
+                <p>$message</p>
+            </div>
+        </body>
+        </html>
+        """.trimIndent(),
+            "text/html",
+            "UTF-8"
+        )
+        progressBar.visibility = View.GONE
     }
 
     override fun onDismiss(dialog: DialogInterface) {
