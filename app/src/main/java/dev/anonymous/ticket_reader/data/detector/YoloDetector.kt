@@ -18,6 +18,11 @@ import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
 
+/**
+ * best_int8 الابطئ في البداية وسرعة متوسطة في التعرف
+ * best_int8_nms الاسرع في البداية لكن الابطئ في التعرف
+ * best_full_integer_quant_nms متوسط في البداية لكن الاسرع في التعرف
+ */
 class YoloDetector(context: Context) {
 
     companion object {
@@ -38,6 +43,7 @@ class YoloDetector(context: Context) {
 
         // ⭐⭐⭐
         private const val MODEL_HAS_NMS = true
+        private const val MODEL_FULL_INT8 = false
     }
 
     private val interpreter: Interpreter
@@ -47,14 +53,31 @@ class YoloDetector(context: Context) {
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * CHANNELS * 4)
         .order(ByteOrder.nativeOrder())
 
+    private val inputBufferInt8 = ByteBuffer
+        .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * CHANNELS)
+        .order(ByteOrder.nativeOrder())
+
+    private val outputInt8 =
+        Array(1) { Array(OUTPUT_CH) { ByteArray(NUM_ANCHORS) } }
+
+    private val outputWithNmsInt8 =
+        Array(1) { Array(300) { ByteArray(OUTPUT_CH) } }
+
+
     private val outputRaw =
         Array(1) { Array(OUTPUT_CH) { FloatArray(NUM_ANCHORS) } }
 
     private val outputWithNms =
         Array(1) { Array(300) { FloatArray(OUTPUT_CH) } }
 
+    private val outputScale: Float
+    private val outputZeroPoint: Int
+
     init {
         interpreter = Interpreter(loadModel(context), createOptions())
+        val outTensor = interpreter.getOutputTensor(0)
+        outputScale = outTensor.quantizationParams().scale
+        outputZeroPoint = outTensor.quantizationParams().zeroPoint
     }
 
     fun close() {
@@ -70,22 +93,36 @@ class YoloDetector(context: Context) {
 
     fun detect(bitmap: Bitmap): List<DetectedBox> {
         val lb = letterbox(bitmap)
-        bitmapToBuffer(lb.bmp)
 
-        if (MODEL_HAS_NMS) {
-            // output جاهز
-            interpreter.run(inputBuffer, outputWithNms)
-            return decodeFinal(outputWithNms, bitmap, lb)
-        } else {
-            // raw output
-            interpreter.run(inputBuffer, outputRaw)
-            val decoded = decodeRaw(outputRaw, bitmap, lb)
-            return nmsPerClass(decoded)
+        return when {
+            MODEL_FULL_INT8 && MODEL_HAS_NMS -> {
+                bitmapToBufferInt8(lb.bmp)
+                interpreter.run(inputBufferInt8, outputWithNmsInt8)
+                decodeFinalInt8(outputWithNmsInt8, bitmap, lb)
+            }
+
+            MODEL_FULL_INT8 -> {
+                bitmapToBufferInt8(lb.bmp)
+                interpreter.run(inputBufferInt8, outputInt8)
+                decodeInt8(outputInt8, bitmap, lb)
+            }
+
+            MODEL_HAS_NMS -> {
+                bitmapToBuffer(lb.bmp)
+                interpreter.run(inputBuffer, outputWithNms)
+                decodeFinal(outputWithNms, bitmap, lb)
+            }
+
+            else -> {
+                bitmapToBuffer(lb.bmp)
+                interpreter.run(inputBuffer, outputRaw)
+                nmsPerClass(decodeRaw(outputRaw, bitmap, lb))
+            }
         }
     }
 
-    // -------------------- Decode --------------------
 
+    // -------------------- Decode --------------------
     private fun decodeRaw(
         out: Array<Array<FloatArray>>,
         bitmap: Bitmap,
@@ -137,6 +174,61 @@ class YoloDetector(context: Context) {
         return boxes
     }
 
+    private fun decodeInt8(
+        out: Array<Array<ByteArray>>,
+        bitmap: Bitmap,
+        lb: Letterbox
+    ): List<DetectedBox> {
+
+        val boxes = ArrayList<DetectedBox>()
+
+        for (i in 0 until NUM_ANCHORS) {
+
+            fun deq(b: Byte): Float =
+                (b.toInt() - outputZeroPoint) * outputScale
+
+            val cls0 = deq(out[0][4][i])
+            val cls1 = deq(out[0][5][i])
+            val cls = if (cls0 > cls1) 0 else 1
+            val score = max(cls0, cls1)
+
+            if (score < CONF_THRES) continue
+
+            val cx = deq(out[0][0][i]) * INPUT_SIZE
+            val cy = deq(out[0][1][i]) * INPUT_SIZE
+            val w = deq(out[0][2][i]) * INPUT_SIZE
+            val h = deq(out[0][3][i]) * INPUT_SIZE
+
+            var left = cx - w / 2f
+            var top = cy - h / 2f
+            var right = cx + w / 2f
+            var bottom = cy + h / 2f
+
+            // undo letterbox
+            left = (left - lb.padX) / lb.scale
+            right = (right - lb.padX) / lb.scale
+            top = (top - lb.padY) / lb.scale
+            bottom = (bottom - lb.padY) / lb.scale
+
+            left = left.coerceIn(0f, bitmap.width.toFloat())
+            right = right.coerceIn(0f, bitmap.width.toFloat())
+            top = top.coerceIn(0f, bitmap.height.toFloat())
+            bottom = bottom.coerceIn(0f, bitmap.height.toFloat())
+
+            if (right > left && bottom > top) {
+                boxes.add(
+                    DetectedBox(
+                        cls,
+                        score,
+                        RectF(left, top, right, bottom)
+                    )
+                )
+            }
+        }
+
+        return nmsPerClass(boxes)
+    }
+
     // إذا الموديل فيه NMS
     private fun decodeFinal(
         out: Array<Array<FloatArray>>,
@@ -185,6 +277,53 @@ class YoloDetector(context: Context) {
         return res
     }
 
+    private fun decodeFinalInt8(
+        out: Array<Array<ByteArray>>,
+        bitmap: Bitmap,
+        lb: Letterbox
+    ): List<DetectedBox> {
+
+        val res = ArrayList<DetectedBox>()
+
+        fun deq(b: Byte): Float =
+            (b.toInt() - outputZeroPoint) * outputScale
+
+        for (i in out[0].indices) {
+            val row = out[0][i]
+
+            val score = deq(row[4])
+            if (score < CONF_THRES) continue
+
+            var left = deq(row[0]) * INPUT_SIZE
+            var top = deq(row[1]) * INPUT_SIZE
+            var right = deq(row[2]) * INPUT_SIZE
+            var bottom = deq(row[3]) * INPUT_SIZE
+            val cls = deq(row[5]).toInt()
+
+            // undo letterbox
+            left = (left - lb.padX) / lb.scale
+            right = (right - lb.padX) / lb.scale
+            top = (top - lb.padY) / lb.scale
+            bottom = (bottom - lb.padY) / lb.scale
+
+            left = left.coerceIn(0f, bitmap.width.toFloat())
+            right = right.coerceIn(0f, bitmap.width.toFloat())
+            top = top.coerceIn(0f, bitmap.height.toFloat())
+            bottom = bottom.coerceIn(0f, bitmap.height.toFloat())
+
+            if (right > left && bottom > top) {
+                res.add(
+                    DetectedBox(
+                        cls,
+                        score,
+                        RectF(left, top, right, bottom)
+                    )
+                )
+            }
+        }
+
+        return res
+    }
 
     // -------------------- NMS --------------------
 
@@ -252,6 +391,20 @@ class YoloDetector(context: Context) {
         }
         inputBuffer.rewind()
     }
+
+    private fun bitmapToBufferInt8(bmp: Bitmap) {
+        inputBufferInt8.rewind()
+        val pixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+        bmp.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+
+        for (p in pixels) {
+            inputBufferInt8.put(((p shr 16) and 0xFF).toByte())
+            inputBufferInt8.put(((p shr 8) and 0xFF).toByte())
+            inputBufferInt8.put((p and 0xFF).toByte())
+        }
+        inputBufferInt8.rewind()
+    }
+
 
     private fun loadModel(ctx: Context): ByteBuffer {
         val fd = ctx.assets.openFd(MODEL_FILENAME)

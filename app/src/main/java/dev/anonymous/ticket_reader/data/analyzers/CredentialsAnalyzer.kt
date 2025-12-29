@@ -10,6 +10,9 @@ class CredentialsAnalyzer(
     private val recentUsernames = LinkedList<String>()
     private val recentPasswords = LinkedList<String>()
 
+    private var singleCredentialsUsername: String? = null
+    private var singleCredentialsPassword: String? = null
+
     // تنظيف القراءات
     private fun clean(text: String): String {
         var cleanedText = text
@@ -32,6 +35,34 @@ class CredentialsAnalyzer(
     // التحقق من أن القيمة تحتوي أرقام فقط
     private fun isValidNumber(text: String): Boolean {
         return text.all { it.isDigit() }
+    }
+
+    fun processSingleImageCredentials(label: String, rawText: String) {
+        val text = clean(rawText)
+
+        if (text.isBlank()) return
+
+        if (!isValidNumber(text)) {
+            Log.d("CRED", "Ignored non-numeric: $text")
+            return
+        }
+
+        when (label) {
+            "username_field" -> {
+                singleCredentialsUsername = text
+            }
+
+            "password_field" -> {
+                singleCredentialsPassword = text
+            }
+        }
+
+        if (singleCredentialsUsername != null && singleCredentialsPassword != null) {
+            Log.d("CRED", "✅ Confirmed: user=$singleCredentialsUsername pass=$singleCredentialsPassword")
+            onCredentialsConfirmed(singleCredentialsUsername!!, singleCredentialsPassword!!)
+            singleCredentialsUsername = null
+            singleCredentialsPassword = null
+        }
     }
 
     fun onDetect(label: String, rawText: String) {

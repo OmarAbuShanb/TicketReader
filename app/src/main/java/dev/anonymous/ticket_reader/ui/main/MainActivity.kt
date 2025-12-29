@@ -9,7 +9,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.os.Bundle
-import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import android.widget.CheckBox
@@ -17,8 +16,8 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -72,7 +71,7 @@ class MainActivity : AppCompatActivity() {
     private val credentialsAnalyzer by lazy {
         CredentialsAnalyzer { user, pass ->
             runOnUiThread {
-                Toast.makeText(this, "User: $user\nPass: $pass", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "$user\n$pass", Toast.LENGTH_LONG).show()
                 pauseAnalyzer()
                 val loginFragment = LoginBottomSheetFragment.newInstance(user, pass)
                 loginFragment.setOnDismissListener(object :
@@ -94,21 +93,21 @@ class MainActivity : AppCompatActivity() {
     private var lastFpsTimestamp = 0L
     // -----------------------------------------
 
+    @Volatile
+    private var isPickerOpen = false
+
     // New: ActivityResultLauncher for picking visual media
-    private val pickMedia = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            try {
-                val bitmap = MediaStore.Images.Media.getBitmap(this.contentResolver, uri)
-                imageView2.setImageBitmap(bitmap)
-                analyzeImageFromGallery(bitmap)
-            } catch (e: Exception) {
-                Log.e("PhotoPicker", "Error loading image: ${e.message}")
-                Toast.makeText(this, "Error loading image", Toast.LENGTH_SHORT).show()
+    private val pickMedia =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            isPickerOpen = false
+            if (uri != null) {
+                val bitmapFromUri = BitmapUtils.loadBitmapCorrectly(this, uri)
+                imageView2.setImageBitmap(bitmapFromUri)
+                analyzeImageFromGallery(bitmapFromUri)
+            } else {
+                Log.d("PhotoPicker", "No media selected")
             }
-        } else {
-            Log.d("PhotoPicker", "No media selected")
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,19 +122,11 @@ class MainActivity : AppCompatActivity() {
         btnPickImage = findViewById(R.id.btnPickImage) // Initialize new button
         tvPickImage = findViewById(R.id.tvPickImage) // Initialize new text view
 
-//        testWithStaticImage()
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         setupFlashButton()
         setupPickImageButton() // New setup function
         requestPermissionAndStartCamera()
-    }
-
-    private fun testWithStaticImage() {
-        // استبدل R.drawable.test_id_card باسم صورتك في مجلد drawable
-        val bitmap = BitmapFactory.decodeResource(resources, R.drawable.test_id_card)
-
-      detector.detect(bitmap)
     }
 
     private fun setupFlashButton() {
@@ -147,8 +138,11 @@ class MainActivity : AppCompatActivity() {
     // New: Setup function for the gallery button
     private fun setupPickImageButton() {
         btnPickImage.setOnClickListener {
-            // Launch the photo picker to select a single image
-            pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            if (isPickerOpen) return@setOnClickListener
+            isPickerOpen = true
+            pickMedia.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
         }
     }
 
@@ -256,7 +250,8 @@ class MainActivity : AppCompatActivity() {
             // التحقق من الحدود لتجنب الاخطاء
             if (cropLeft < 0 || cropTop < 0 ||
                 cropLeft + cropWidth > rotatedBitmap.width ||
-                cropTop + cropHeight > rotatedBitmap.height) {
+                cropTop + cropHeight > rotatedBitmap.height
+            ) {
                 return // أو يمكنك عمل clamp للقيم
             }
 
@@ -271,8 +266,6 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { overlayView.clear() }
                 return
             }
-
-            // --- تصحيح الحسابات هنا ---
 
             // حساب نسبة التمدد التي قام بها الموديل (لأن الموديل ضغط الصورة إلى 640x640)
             // ملاحظة: افترضنا أن كلاس Detector يقوم بعمل Resize داخلي لـ 640x640
@@ -301,10 +294,13 @@ class MainActivity : AppCompatActivity() {
                 finalDetectionsForUI.add(normalizedRect)
             }
 
-
             // 4. تحديث الواجهة (الرسم)
             runOnUiThread {
-                overlayView.setResults(finalDetectionsForUI, rotatedBitmap.width, rotatedBitmap.height)
+                overlayView.setResults(
+                    finalDetectionsForUI,
+                    rotatedBitmap.width,
+                    rotatedBitmap.height
+                )
             }
 
             if (isAnalyzerPaused) return
@@ -317,16 +313,15 @@ class MainActivity : AppCompatActivity() {
                 // تأكد من أن الدالة cropBox تتعامل مع overflow (إذا خرجت الإحداثيات قليلاً عن الصورة)
                 val croppedForOcr = BitmapUtils.cropBoxPx(rotatedBitmap, pixelRect)
 
-
                 // تكبير الصورة لتحسين قراءة النصوص الصغيرة
-                val big = croppedForOcr.scale(croppedForOcr.width * 4, croppedForOcr.height * 4, true)
+                val big =
+                    croppedForOcr.scale(croppedForOcr.width * 4, croppedForOcr.height * 4, true)
                 runOnUiThread {
                     imageView2.setImageBitmap(big)
                 }
                 MlKitOcrReader.readText(big) { text ->
                     Log.d("ID-FIELD", "$label → $text")
                     if (!isAnalyzerPaused) {
-                        println("!isAnalyzerPaused")
                         credentialsAnalyzer.onDetect(label, text)
                     }
                 }
@@ -342,6 +337,7 @@ class MainActivity : AppCompatActivity() {
 
     // New: Function to analyze an image picked from the gallery
     private fun analyzeImageFromGallery(bitmap: Bitmap) {
+        Toast.makeText(this, "جار تحليل الصورة", Toast.LENGTH_SHORT).show()
         cameraExecutor.execute {
             try {
                 val startTime = System.currentTimeMillis()
@@ -360,26 +356,31 @@ class MainActivity : AppCompatActivity() {
                     uniqueDetections.forEach { box ->
                         val label = labels.getOrNull(box.classId) ?: "unknown"
                         val croppedForOcr = BitmapUtils.cropBoxPx(bitmap, box.box)
-                        val big = croppedForOcr.scale(croppedForOcr.width * 4, croppedForOcr.height * 4)
+                        val big =
+                            croppedForOcr.scale(croppedForOcr.width * 4, croppedForOcr.height * 4)
 
                         MlKitOcrReader.readText(big) {
                             Log.d("ID-FIELD", "$label (from gallery) → $it")
                             if (isAnalyzerPaused) {
                                 return@readText
                             }
-                            credentialsAnalyzer.onDetect(label, it)
+                            credentialsAnalyzer.processSingleImageCredentials(label, it)
                         }
                     }
                 } else {
                     runOnUiThread {
-                        Toast.makeText(this, "No credentials found in selected image.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this,
+                            "لم يستطيع البرنامج التعرف على الصورة",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
 
             } catch (e: Exception) {
                 Log.e("ID-DETECT", "Error analyzing gallery image: ${e.message}")
                 runOnUiThread {
-                    Toast.makeText(this, "Error analyzing image", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "فشل في تحليل الصورة", Toast.LENGTH_SHORT).show()
                 }
             }
         }

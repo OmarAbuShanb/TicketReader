@@ -84,7 +84,7 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         if (username != null && password != null) {
             showWebLoginPage()
         } else {
-            Toast.makeText(requireContext(), "Username or password missing", Toast.LENGTH_SHORT)
+            Toast.makeText(requireContext(), "تم فقدان اليوزرنيم او الباسورد", Toast.LENGTH_SHORT)
                 .show()
             dismiss()
         }
@@ -99,7 +99,7 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
             @android.webkit.JavascriptInterface
             @Suppress("unused")
             fun hideLoader() {
-                Toast.makeText(requireContext(), "جار تسجيل الدخول...", Toast.LENGTH_LONG).show()
+                Toast.makeText(requireContext(), "جار تسجيل الدخول...", Toast.LENGTH_SHORT).show()
             }
         }, "Android")
     }
@@ -181,11 +181,12 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
         view.evaluateJavascript(
             """
             (function() {
-                const u = document.querySelector('input[name="username"], input[name="user"], input[type="text"]');
-                const p = document.querySelector('input[name="password"], input[type="password"]');
+                const u = document.querySelector('input[name="username"],input[name="Username"],input[name="اسم المستخدم"], input[name="user"], input[type="text"]');
+                const p = document.querySelector('input[name="password"],input[name="Password"],input[name="كلمة المرور"],input[name="كلمة السر"],input[type="password"]');
                 const b = [...document.querySelectorAll('button, input[type=submit], input[type=button]')]
                               .find(x => (x.innerText || x.value || "").toLowerCase().includes("login")
-                                      || (x.innerText || x.value || "").includes("connect")
+                                      || (x.innerText || x.value || "").toLowerCase().includes("connect")
+                                      || (x.innerText || x.value || "").includes("تسجيل الدخول")
                                       || (x.innerText || x.value || "").includes("دخول"));
 
                 if (!u && !p) return "NO_USER_PASS";
@@ -247,6 +248,18 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
         listener?.onDialogDismissed()
+    }
+
+    override fun onDestroyView() {
+        webLoginView.apply {
+            loadUrl("about:blank")
+            removeJavascriptInterface("Android")
+            stopLoading()
+            clearHistory()
+            clearCache(true)
+            destroy()
+        }
+        super.onDestroyView()
     }
 
     interface OnDismissListener {
