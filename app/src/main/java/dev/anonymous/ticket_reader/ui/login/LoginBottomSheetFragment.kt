@@ -36,6 +36,8 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
 
     private var listener: OnDismissListener? = null
 
+    private var credentialsInjected = false
+
     fun setOnDismissListener(listener: OnDismissListener) {
         this.listener = listener
     }
@@ -144,11 +146,18 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
 
+                if (credentialsInjected) {
+                    progressBar.visibility = View.GONE
+                    return
+                }
+
                 if (url.contains("status", true) || url.contains("success", true)) {
                     progressBar.visibility = View.GONE
                 }
 
-                if (url.contains("login", true) || url.contains("hotspot", true)) {
+                if (url.contains("login", true) || url.contains("hotspot", true)
+                ) {
+                    credentialsInjected = true
                     checkLoginFieldsAndInjectCredentials(view)
                 }
             }
@@ -180,28 +189,86 @@ class LoginBottomSheetFragment : BottomSheetDialogFragment() {
     private fun checkLoginFieldsAndInjectCredentials(view: WebView) {
         view.evaluateJavascript(
             """
-            (function() {
-                const u = document.querySelector('input[name="username"],input[name="Username"],input[name="اسم المستخدم"], input[name="user"], input[type="text"]');
-                const p = document.querySelector('input[name="password"],input[name="Password"],input[name="كلمة المرور"],input[name="كلمة السر"],input[type="password"]');
-                const b = [...document.querySelectorAll('button, input[type=submit], input[type=button]')]
-                              .find(x => (x.innerText || x.value || "").toLowerCase().includes("login")
-                                      || (x.innerText || x.value || "").toLowerCase().includes("connect")
-                                      || (x.innerText || x.value || "").includes("تسجيل الدخول")
-                                      || (x.innerText || x.value || "").includes("دخول"));
-
+            (function () {
+                if (window.__ANDROID_LOGIN_INJECTED__) {
+                    return "ALREADY_INJECTED";
+                }
+                window.__ANDROID_LOGIN_INJECTED__ = true;
+          
+                const usernameSelectors = [
+                    'input[name*="User"]',
+                    'input[name*="user"]',
+                    'input[id*="user"]',
+                    'input[placeholder*="User"]',
+                    'input[placeholder*="user"]',
+                    'input[placeholder*="اسم"]'
+                ];
+            
+                const passwordSelectors = [
+                    'input[type="password"]',
+                    'input[name*="Pass"]',
+                    'input[name*="pass"]',
+                    'input[id*="pass"]',
+                    'input[placeholder*="Pass"]',
+                    'input[placeholder*="pass"]',
+                    'input[placeholder*="المرور"]',
+                    'input[placeholder*="السر"]'
+                ];
+            
+                const findFirst = selectors =>
+                    selectors
+                        .map(s => document.querySelector(s))
+                        .find(el => el);
+            
+                const u = findFirst(usernameSelectors);
+                const p = findFirst(passwordSelectors);
+            
                 if (!u && !p) return "NO_USER_PASS";
                 if (!u) return "NO_USERNAME";
                 if (!p) return "NO_PASSWORD";
-                if (!b) return "NO_BUTTON";
-
+            
+                u.focus();
                 u.value = "$username";
+                u.dispatchEvent(new Event('input', { bubbles: true }));
+            
+                p.focus();
                 p.value = "$password";
+                p.dispatchEvent(new Event('input', { bubbles: true }));
+            
+                const form = p.closest('form') || u.closest('form');
+            
+                if (form) {
+                    setTimeout(() => {
+                        form.submit();
+                        Android.hideLoader();
+                    }, 800);
+                    return "FORM_SUBMITTED";
+                }
+            
+                const buttons = [...document.querySelectorAll(
+                    'button, input[type=submit], input[type=button]'
+                )];
+            
+                const button = buttons.find(b => {
+                    const t = (b.innerText || b.value || "").toLowerCase();
+                    return (
+                        t.includes("login") ||
+                        t.includes("log in") ||
+                        t.includes("connect") ||
+                        t.includes("sign in") ||
+                        t.includes("دخول") ||
+                        t.includes("تسجيل")
+                    );
+                });
+            
+                if (!button) return "NO_BUTTON";
+            
                 setTimeout(() => {
-                    b.click();
+                    button.click();
                     Android.hideLoader();
-                }, 1000);
-
-            return "DONE";
+                }, 800);
+            
+                return "BUTTON_CLICKED";
             })();
             """
         ) { result ->

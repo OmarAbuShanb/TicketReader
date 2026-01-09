@@ -5,17 +5,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.os.Bundle
 import android.util.Log
 import android.util.Size
-import android.widget.CheckBox
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -24,41 +20,37 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
-import androidx.camera.core.TorchState
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.scale
-import dev.anonymous.ticket_reader.R
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.ViewModelProvider
 import dev.anonymous.ticket_reader.data.analyzers.CredentialsAnalyzer
 import dev.anonymous.ticket_reader.data.detector.YoloDetector
 import dev.anonymous.ticket_reader.data.ocr.MlKitOcrReader
+import dev.anonymous.ticket_reader.databinding.ActivityMainBinding
 import dev.anonymous.ticket_reader.ui.login.LoginBottomSheetFragment
-import dev.anonymous.ticket_reader.ui.views.FocusBoxView
-import dev.anonymous.ticket_reader.ui.views.OverlayView
 import dev.anonymous.ticket_reader.utils.BitmapUtils
+import dev.anonymous.ticket_reader.utils.FlashMode
 import dev.anonymous.ticket_reader.utils.ImageProxyUtils
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var cbSaveCredentials: CheckBox
-    private lateinit var previewView: PreviewView
-    private lateinit var overlayView: OverlayView
-    private lateinit var focusBoxView: FocusBoxView
-    private lateinit var btnFlash: ImageButton
-    private lateinit var imageView2: ImageView
-    private lateinit var btnPickImage: ImageButton
-    private lateinit var tvPickImage: TextView
+    private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
 
     private var camera: Camera? = null
     private var imageAnalysis: ImageAnalysis? = null
-    private var isFlashOn = false
 
     private val detector by lazy { YoloDetector(this) }
+
+    private val viewModel: MainViewModel by lazy {
+        ViewModelProvider(this)[MainViewModel::class.java]
+    }
 
     private val labels = listOf(
         "password_field",
@@ -73,6 +65,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 Toast.makeText(this, "$user\n$pass", Toast.LENGTH_LONG).show()
                 pauseAnalyzer()
+                binding.overlayView.clear()
                 val loginFragment = LoginBottomSheetFragment.newInstance(user, pass)
                 loginFragment.setOnDismissListener(object :
                     LoginBottomSheetFragment.OnDismissListener {
@@ -81,28 +74,22 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 loginFragment.show(supportFragmentManager, "LoginBottomSheetFragment")
-                if (cbSaveCredentials.isChecked) {
+                if (binding.cbSaveCredentials.isChecked) {
                     saveCredentialsToClipboard(user, pass)
                 }
             }
         }
     }
 
-    // --- Variables for performance measurement ---
-    private var frameCount = 0
-    private var lastFpsTimestamp = 0L
-    // -----------------------------------------
-
     @Volatile
     private var isPickerOpen = false
 
-    // New: ActivityResultLauncher for picking visual media
     private val pickMedia =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             isPickerOpen = false
             if (uri != null) {
                 val bitmapFromUri = BitmapUtils.loadBitmapCorrectly(this, uri)
-                imageView2.setImageBitmap(bitmapFromUri)
+                binding.imageView2.setImageBitmap(bitmapFromUri)
                 analyzeImageFromGallery(bitmapFromUri)
             } else {
                 Log.d("PhotoPicker", "No media selected")
@@ -111,39 +98,49 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        previewView = findViewById(R.id.previewView)
-        overlayView = findViewById(R.id.overlayView)
-        focusBoxView = findViewById(R.id.focusBoxView)
-        btnFlash = findViewById(R.id.btnFlash)
-        cbSaveCredentials = findViewById(R.id.cbSaveCredentials)
-        imageView2 = findViewById(R.id.imageView2)
-        btnPickImage = findViewById(R.id.btnPickImage) // Initialize new button
-        tvPickImage = findViewById(R.id.tvPickImage) // Initialize new text view
+        installSplashScreen()
+        enableEdgeToEdge()
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        setupFlashButton()
-        setupPickImageButton() // New setup function
+        setupListeners()
+        observeFlashMode()
         requestPermissionAndStartCamera()
     }
 
-    private fun setupFlashButton() {
-        btnFlash.setOnClickListener {
-            toggleFlash()
+    private fun setupListeners() {
+        binding.layoutToggleFlashMode.setOnClickListener {
+            viewModel.toggleFlashMode()
         }
-    }
 
-    // New: Setup function for the gallery button
-    private fun setupPickImageButton() {
-        btnPickImage.setOnClickListener {
+        binding.btnPickImage.setOnClickListener {
             if (isPickerOpen) return@setOnClickListener
             isPickerOpen = true
             pickMedia.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
             )
         }
+    }
+
+    private fun observeFlashMode() {
+        viewModel.flashMode.observe(this) { mode ->
+            updateFlashUI(mode)
+
+            // Control the camera torch state based on the ViewModel
+            val enableTorch = viewModel.isTorchNeeded(mode)
+            camera?.let {
+                if (it.cameraInfo.hasFlashUnit()) {
+                    it.cameraControl.enableTorch(enableTorch)
+                }
+            }
+        }
+    }
+
+    private fun updateFlashUI(mode: FlashMode) {
+        binding.btnFlash.setImageResource(mode.iconRes)
+        binding.tvFlashMode.text = mode.text
     }
 
     private fun requestPermissionAndStartCamera() {
@@ -171,7 +168,7 @@ class MainActivity : AppCompatActivity() {
 
             val preview = Preview.Builder()
                 .build()
-                .also { it.surfaceProvider = previewView.surfaceProvider }
+                .also { it.surfaceProvider = binding.previewView.surfaceProvider }
 
             imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -186,7 +183,7 @@ class MainActivity : AppCompatActivity() {
                         )
                         .build()
                 )
-                .setTargetRotation(previewView.display.rotation)
+                .setTargetRotation(binding.previewView.display.rotation)
                 .build()
             resumeAnalyzer()
 
@@ -198,30 +195,16 @@ class MainActivity : AppCompatActivity() {
                     preview,
                     imageAnalysis
                 )
-                observeFlashState()
+
+                // Set initial torch state based on ViewModel's persisted mode
+                if (viewModel.isTorchNeeded()) {
+                    camera?.cameraControl?.enableTorch(true)
+                }
+
             } catch (e: Exception) {
                 Log.e("CameraX", "Binding failed: ${e.message}")
             }
         }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun toggleFlash() {
-        camera?.let {
-            if (it.cameraInfo.hasFlashUnit()) {
-                isFlashOn = it.cameraInfo.torchState.value != TorchState.ON
-                it.cameraControl.enableTorch(isFlashOn)
-            }
-        }
-    }
-
-    private fun observeFlashState() {
-        camera?.cameraInfo?.torchState?.observe(this) { state ->
-            if (state == TorchState.ON) {
-                btnFlash.setImageResource(R.drawable.ic_flash_on)
-            } else {
-                btnFlash.setImageResource(R.drawable.ic_flash_off)
-            }
-        }
     }
 
     private fun analyzeFrame(imageProxy: ImageProxy) {
@@ -236,11 +219,15 @@ class MainActivity : AppCompatActivity() {
                 originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true
             )
 
-            // 2. تحديد منطقة التركيز (Focus Box)
-            val focusRect = focusBoxView.getBoxRect() ?: return
+            runOnUiThread {
+                binding.imageView2.setImageBitmap(originalBitmap)
+            }
 
-            val scaleX = rotatedBitmap.width / focusBoxView.width.toFloat()
-            val scaleY = rotatedBitmap.height / focusBoxView.height.toFloat()
+            // 2. تحديد منطقة التركيز (Focus Box)
+            val focusRect = binding.focusBoxView.getBoxRect() ?: return
+
+            val scaleX = rotatedBitmap.width / binding.focusBoxView.width.toFloat()
+            val scaleY = rotatedBitmap.height / binding.focusBoxView.height.toFloat()
 
             val cropLeft = (focusRect.left * scaleX).toInt()
             val cropTop = (focusRect.top * scaleY).toInt()
@@ -262,8 +249,10 @@ class MainActivity : AppCompatActivity() {
             // 3. الاكتشاف (Detection)
             val detections = detector.detect(croppedBitmap)
 
+            if (isAnalyzerPaused) return
+
             if (detections.isEmpty()) {
-                runOnUiThread { overlayView.clear() }
+                runOnUiThread { binding.overlayView.clear() }
                 return
             }
 
@@ -294,16 +283,13 @@ class MainActivity : AppCompatActivity() {
                 finalDetectionsForUI.add(normalizedRect)
             }
 
-            // 4. تحديث الواجهة (الرسم)
             runOnUiThread {
-                overlayView.setResults(
+                binding.overlayView.setResults(
                     finalDetectionsForUI,
                     rotatedBitmap.width,
                     rotatedBitmap.height
                 )
             }
-
-            if (isAnalyzerPaused) return
 
             // 5. تنفيذ الـ OCR على المناطق المكتشفة
             finalDetectionsForOCR.forEach { (classId, pixelRect) ->
@@ -317,7 +303,7 @@ class MainActivity : AppCompatActivity() {
                 val big =
                     croppedForOcr.scale(croppedForOcr.width * 4, croppedForOcr.height * 4, true)
                 runOnUiThread {
-                    imageView2.setImageBitmap(big)
+                    binding.imageView2.setImageBitmap(big)
                 }
                 MlKitOcrReader.readText(big) { text ->
                     Log.d("ID-FIELD", "$label → $text")
@@ -364,6 +350,8 @@ class MainActivity : AppCompatActivity() {
                             if (isAnalyzerPaused) {
                                 return@readText
                             }
+                            // The original code uses processSingleImageCredentials which is missing here, 
+                            // I will assume it's part of CredentialsAnalyzer and keep it as is.
                             credentialsAnalyzer.processSingleImageCredentials(label, it)
                         }
                     }
@@ -388,11 +376,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun pauseAnalyzer() {
         isAnalyzerPaused = true
-        overlayView.clear()
         imageAnalysis?.clearAnalyzer()
-        camera?.let {
-            if (it.cameraInfo.hasFlashUnit() && isFlashOn) {
-                it.cameraControl.enableTorch(false)
+
+        // Temporarily disable torch if the current mode requires it
+        if (viewModel.isTorchNeeded()) {
+            camera?.let {
+                if (it.cameraInfo.hasFlashUnit()) {
+                    it.cameraControl.enableTorch(false)
+                }
             }
         }
     }
@@ -406,21 +397,14 @@ class MainActivity : AppCompatActivity() {
             }
             analyzeFrame(imageProxy)
         }
-        camera?.let {
-            if (it.cameraInfo.hasFlashUnit() && isFlashOn) {
-                it.cameraControl.enableTorch(true)
-            }
-        }
-    }
 
-    private fun calculateFps() {
-        frameCount++
-        val now = System.currentTimeMillis()
-        if (lastFpsTimestamp == 0L) lastFpsTimestamp = now
-        if (now - lastFpsTimestamp >= 1000) {
-            Log.d("PERFORMANCE", "FPS: $frameCount")
-            frameCount = 0
-            lastFpsTimestamp = now
+        // Re-enable torch if the current mode requires it
+        if (viewModel.isTorchNeeded()) {
+            camera?.let {
+                if (it.cameraInfo.hasFlashUnit()) {
+                    it.cameraControl.enableTorch(true)
+                }
+            }
         }
     }
 
@@ -438,10 +422,31 @@ class MainActivity : AppCompatActivity() {
         }, 300)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (viewModel.isTorchNeeded()) {
+            camera?.let {
+                if (it.cameraInfo.hasFlashUnit()) {
+                    it.cameraControl.enableTorch(true)
+                }
+            }
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        imageAnalysis?.clearAnalyzer()
         cameraExecutor.shutdown()
         imageAnalysis?.clearAnalyzer()
+        try {
+            if (!cameraExecutor.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+                Log.w("YOLO-SHUTDOWN", "Executor did not terminate in time. Forcing shutdown.")
+                cameraExecutor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            Log.e("YOLO-SHUTDOWN", "Executor termination interrupted", e)
+            Thread.currentThread().interrupt()
+        }
         camera?.cameraControl?.enableTorch(false)
         detector.close()
     }

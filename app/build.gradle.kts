@@ -84,6 +84,9 @@ dependencies {
 
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
 
+    // Splash Screen API
+    implementation("androidx.core:core-splashscreen:1.2.0")
+
     // CameraX
     val cameraXVersion = "1.5.1"
     implementation("androidx.camera:camera-core:$cameraXVersion")
@@ -93,8 +96,6 @@ dependencies {
 
     // ML Kit OCR
     implementation("com.google.mlkit:text-recognition:16.0.1")
-
-//    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 
     // TensorFlow Lite
     implementation("org.tensorflow:tensorflow-lite:2.17.0")
